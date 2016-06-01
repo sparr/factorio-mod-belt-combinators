@@ -1,0 +1,10 @@
+{
+  "name": "belt-combinators",
+  "version": "0.0.1",
+  "title": "Belt Combinators",
+  "author": "Sparr",
+  "homepage": "http://github.com/sparr/factorio-mod-belt-combinators",
+  "contact": "sparr0@gmail.com",
+  "description": "Adds a combinator to count items on belts.",
+  "dependencies": ["base >= 0.12.33"]
+}
