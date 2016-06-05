@@ -55,7 +55,8 @@ data:extend( {
         red = {0.515625, -0.078125},
         green = {0.515625, -0.484375},
       }
-    }
+    },
+    circuit_wire_max_distance = 7.5
   },
 })
 
