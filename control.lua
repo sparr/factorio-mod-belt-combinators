@@ -38,9 +38,11 @@ local function onLoad()
   bcombs=global.belt_combinators
 end
 
-local function pos2s(ent)
-  if ent and ent.position then
-    return ent.position.x..','..ent.position.y
+local function pos2s(pos)
+  if pos.x then
+    return pos.x..','..pos.y
+  elseif pos[1] then
+    return pos[1]..','..pos[2]
   end
   return ''
 end
@@ -62,26 +64,58 @@ end
 
 line_counts = {["transport-belt"]=2,["transport-belt-to-ground"]=4,["splitter"]=8}
 
+-- fake belts are used to prime the belt-following process starting at a belt combinator
+local function fake_belt(entity,dir) 
+  return {
+    name="fake-transport-belt",
+    position={x=entity.position.x,y=entity.position.y},
+    direction=dir,
+    type="transport-belt",
+    get_transport_line=function(_) return nil end,
+    surface=entity.surface,
+    valid=true
+  }
+end
+
+local function rotate_posd(posd,rotation)
+  local x,y,d = posd[1],posd[2],posd[3]
+  if     rotation==defines.direction.south then
+    d=(d+4)%8
+    x = -x
+    y = -y
+  elseif rotation==defines.direction.east then
+    d=(d+2)%8
+    t = x
+    x = -y
+    y = t
+  elseif rotation==defines.direction.west then
+    d=(d+6)%8
+    t = x
+    x = y
+    y = -t
+  end
+  return x,y,d
+end
+
+local function rotate_pos(x,y,rotation)
+  return rotate_posd({x,y,0},rotation)
+end
+
 -- starting_entity is a belt(-like) entity, or a belt combinator
 -- lines are which side to follow, array of 2-8 booleans
 local function walk_belt_lines(starting_entity,lines)
   if not starting_entity or not starting_entity.valid then return {} end
-  debug('walk_belt_lines '..starting_entity.name..' '..pos2s(starting_entity)..' '..lines2s(lines))
+  debug('walk_belt_lines '..starting_entity.name..' '..pos2s(starting_entity.position)..' '..lines2s(lines))
   local queue = {}
   if starting_entity.name=="belt-combinator" then
-    local x=starting_entity.position.x
-    local y=starting_entity.position.y
-    local function fake_belt(dir) 
-      return {name="fake-transport-belt",position={x=x,y=y},direction=dir,type="transport-belt",get_transport_line=function(_) return nil end, surface=starting_entity.surface,valid=true}
-    end
     queue = {
-      {entity=fake_belt(defines.direction.north),lines={true,true}},
-      {entity=fake_belt(defines.direction.south),lines={true,true}},
-      {entity=fake_belt(defines.direction.east ),lines={true,true}},
-      {entity=fake_belt(defines.direction.west ),lines={true,true}},
+      {entity=fake_belt(starting_entity,defines.direction.north),lines={true,true}},
+      {entity=fake_belt(starting_entity,defines.direction.south),lines={true,true}},
+      {entity=fake_belt(starting_entity,defines.direction.east ),lines={true,true}},
+      {entity=fake_belt(starting_entity,defines.direction.west ),lines={true,true}},
     }
   else
-    queue = {{entity=starting_entity,lines=lines,fake=false}}
+    queue = {{entity=starting_entity,lines=lines}}
   end
   local done = {} -- table of y coords mapped to tables of x coords mapped to arrays of lines
   local result = {} -- list of LuaTransportLine to return
@@ -92,7 +126,7 @@ local function walk_belt_lines(starting_entity,lines)
     local lines = queue[#queue].lines -- lines to check
     table.remove(queue,#queue)
     if entity and entity.valid then
-      debug(#queue .. ' dequeue '..entity.name..' '..pos2s(entity)..' '..lines2s(lines)..' '..entity.direction)
+      debug(#queue .. ' dequeue '..entity.name..' '..pos2s(entity.position)..' '..lines2s(lines)..' '..entity.direction)
       local lines_to_proceed = {}
       local num_lines = line_counts[entity.type]
       if num_lines then
@@ -138,16 +172,12 @@ local function walk_belt_lines(starting_entity,lines)
               -- prepare to look ahead of a single tile
               pdls[1] = {pos=entity.position,dir=entity.direction,lines={lines_to_proceed[1],lines_to_proceed[2]}}
             else -- splitter
-              -- prepare to look ahead of both tiles
-              if     entity.direction==defines.direction.north then
-                pos = {{x=entity.position.x-0.5,y=entity.position.y},{x=entity.position.x+0.5,y=entity.position.y}}
-              elseif entity.direction==defines.direction.south then
-                pos = {{x=entity.position.x+0.5,y=entity.position.y},{x=entity.position.x-0.5,y=entity.position.y}}
-              elseif entity.direction==defines.direction.east then
-                pos = {{x=entity.position.x,y=entity.position.y-0.5},{x=entity.position.x,y=entity.position.y+0.5}}          
-              elseif entity.direction==defines.direction.west then
-                pos = {{x=entity.position.x,y=entity.position.y+0.5},{x=entity.position.x,y=entity.position.y-0.5}}          
-              end
+              local pos
+              local dx,dy = rotate_pos(-0.5,0,dir)
+              pos = {
+                {x=entity.position.x+dx,y=entity.position.y+dy},
+                {x=entity.position.x-dx,y=entity.position.y-dy}
+              }
               local ls = {{false,false},{false,false}}
               if lines_to_proceed[5] then ls[1][1] = true end
               if lines_to_proceed[6] then ls[1][2] = true end
@@ -162,23 +192,13 @@ local function walk_belt_lines(starting_entity,lines)
               local dir = source.dir
               local lines = source.lines
               -- debug('pdls '..pos.x..','..pos.y..' '..dir..' '..lines2s(lines))
-              local tpos = {}
-              if     dir==defines.direction.north then
-                tpos={pos.x,pos.y-1}
-              elseif dir==defines.direction.south then
-                tpos={pos.x,pos.y+1}
-              elseif dir==defines.direction.east then
-                tpos={pos.x+1,pos.y}
-              elseif dir==defines.direction.west then
-                tpos={pos.x-1,pos.y}
-              else
-                debug('nil target position')
-                tpos=nil
-              end
-              if tpos then
-                local entities = game.get_surface(entity.surface.index).find_entities({tpos,tpos})
-                local target = nil
-                for _,candidate in pairs(entities) do
+              local dx,dy = rotate_pos(0,-1,dir)
+              local tpos = {pos.x+dx,pos.y+dy}
+              -- debug("tpos "..pos2s(tpos))
+              local entities = game.get_surface(entity.surface.index).find_entities({tpos,tpos})
+              local target = nil
+              for _,candidate in pairs(entities) do
+                if candidate ~= entity_to_ignore then
                   if candidate.type == "transport-belt" or
                     candidate.type == "transport-belt-to-ground" or
                     candidate.type == "splitter" then
@@ -186,89 +206,83 @@ local function walk_belt_lines(starting_entity,lines)
                     break
                   end
                 end
-                if target then
-                  -- nothing accepts connections from the front
-                  if not (math.abs(target.direction-dir)==4) then
-                    -- underground belt outputs don't accept connections from behind
-                    if not (target.type=="transport-belt-to-ground" and target.belt_to_ground_type=="output" and target.direction==dir) then
-                      -- splitters don't accept connections from the side
-                      if not (target.type=="splitter" and target.direction~=dir) then
-                        if target.type~="splitter" then
-                          -- belts and underground belts behave similarly
-                          if target.direction==dir then
-                            queue[#queue+1] = {entity=target,lines=lines}
-                          else
-                            local turn = false
-                            if target.type=='transport-belt' then
-                              local belt_behind_target = false
-                              if entity.name ~= "fake-transport-belt" then
-                                -- find a belt-like entity behind the target
-                                local bpos = {}
-                                if     target.direction==defines.direction.north then
-                                  bpos={target.position.x,target.position.y+1}
-                                elseif target.direction==defines.direction.south then
-                                  bpos={target.position.x,target.position.y-1}
-                                elseif target.direction==defines.direction.east then
-                                  bpos={target.position.x-1,target.position.y}
-                                elseif target.direction==defines.direction.west then
-                                  bpos={target.position.x+1,target.position.y}
-                                else
-                                  debug('nil behind position')
-                                  bpos=nil
-                                end
-                                if bpos then
-                                  local entities = game.get_surface(entity.surface.index).find_entities({bpos,bpos})
-                                  for _,candidate in pairs(entities) do
-                                    if candidate.type == "transport-belt" or
-                                      candidate.type == "transport-belt-to-ground" or
-                                      candidate.type == "splitter" then
-                                      if candidate.direction == target.direction then
-                                        belt_behind_target = true
-                                      end
-                                      break
+              end
+              if target then
+                -- nothing accepts connections from the front
+                if not (math.abs(target.direction-dir)==4) then
+                  -- underground belt outputs don't accept connections from behind
+                  if not (target.type=="transport-belt-to-ground" and target.belt_to_ground_type=="output" and target.direction==dir) then
+                    -- splitters don't accept connections from the side
+                    if not (target.type=="splitter" and target.direction~=dir) then
+                      if target.type~="splitter" then
+                        -- belts and underground belts behave similarly
+                        if target.direction==dir then
+                          queue[#queue+1] = {entity=target,lines=lines}
+                        else
+                          local turn = false
+                          if target.type=='transport-belt' and entity.name~="fake-transport-belt" then
+                            local belt_behind_target = false
+                            -- find a belt-like entity behind the target or on the far side
+                            local tpxd,tpyd=rotate_pos(0,1,target.direction)
+                            local pxd, pyd =rotate_pos(0,-2,dir)
+                            local bpd = {
+                              {pos={target.position.x+tpxd,target.position.y+tpyd},dir=target.direction},
+                              {pos={pos.x+pxd,pos.y+pyd},dir=(dir+4)%8}
+                            }
+                            for _,bpos in pairs(bpd) do
+                              -- debug("checking for belt-behind at "..pos2s(bpos.pos).." dir="..bpos.dir)
+                              local entities = game.get_surface(entity.surface.index).find_entities({bpos.pos,bpos.pos})
+                              for _,candidate in pairs(entities) do
+                                if candidate ~= entity_to_ignore then
+                                  -- debug("candidate "..candidate.type.." ".."dir="..candidate.direction)
+                                  if candidate.type == "transport-belt" or
+                                    candidate.type == "transport-belt-to-ground" or
+                                    candidate.type == "splitter" then
+                                    if candidate.direction == bpos.dir then
+                                      belt_behind_target = true
                                     end
+                                    break
                                   end
                                 end
-                              else
-                                belt_behind_target = true
                               end
-                              if not belt_behind_target then
-                                -- belt turn
-                                queue[#queue+1] = {entity=target,lines=lines}
-                                turn = true
-                              end
+                              if belt_behind_target then break end
                             end
-                            if not turn then
-                              if (target.direction-dir+8)%8==2 then
-                                -- right sideload
-                                if target.type=="transport-belt" or 
-                                  (target.belt_to_ground_type=="output" and lines[2]) or
-                                  (target.belt_to_ground_type=="input"  and lines[1]) then
-                                  queue[#queue+1] = {entity=target,lines={false,true}}
-                                end
-                              else
-                                -- left sideload
-                                if target.type=="transport-belt" or 
-                                  (target.belt_to_ground_type=="output" and lines[1]) or
-                                  (target.belt_to_ground_type=="input"  and lines[2]) then
-                                  queue[#queue+1] = {entity=target,lines={true,false}}
-                                end
+                            if not belt_behind_target then
+                              -- belt turn
+                              queue[#queue+1] = {entity=target,lines=lines}
+                              turn = true
+                            end
+                          end
+                          if not turn then
+                            if (target.direction-dir+8)%8==2 then
+                              -- right sideload
+                              if target.type=="transport-belt" or 
+                                (target.belt_to_ground_type=="output" and lines[2]) or
+                                (target.belt_to_ground_type=="input"  and lines[1]) then
+                                queue[#queue+1] = {entity=target,lines={false,true}}
+                              end
+                            else
+                              -- left sideload
+                              if target.type=="transport-belt" or 
+                                (target.belt_to_ground_type=="output" and lines[1]) or
+                                (target.belt_to_ground_type=="input"  and lines[2]) then
+                                queue[#queue+1] = {entity=target,lines={true,false}}
                               end
                             end
                           end
-                        else
-                          -- splitters are special
-                          if dir==defines.direction.north and target.position.x>pos.x or
-                             dir==defines.direction.south and target.position.x<pos.x or
-                             dir==defines.direction.east  and target.position.y>pos.y or
-                             dir==defines.direction.west  and target.position.y<pos.y then
-                             -- connected to left side of splitter
-                             queue[#queue+1] = {entity=target,lines={lines[1],lines[2]}}
-                           else
-                             -- connected to right side of splitter
-                             queue[#queue+1] = {entity=target,lines={false,false,lines[1],lines[2]}}
-                           end
                         end
+                      else
+                        -- splitters are special
+                        if dir==defines.direction.north and target.position.x>pos.x or
+                           dir==defines.direction.south and target.position.x<pos.x or
+                           dir==defines.direction.east  and target.position.y>pos.y or
+                           dir==defines.direction.west  and target.position.y<pos.y then
+                           -- connected to left side of splitter
+                           queue[#queue+1] = {entity=target,lines={lines[1],lines[2]}}
+                         else
+                           -- connected to right side of splitter
+                           queue[#queue+1] = {entity=target,lines={false,false,lines[1],lines[2]}}
+                         end
                       end
                     end
                   end
@@ -284,6 +298,8 @@ local function walk_belt_lines(starting_entity,lines)
 end
 
 local function onTick(event)
+  -- TODO cache belt walking results
+  -- TODO update periodically or on belt modification
   if event.tick%polling_cycles == 0 then
     local toRemove = {}
     for i,bc in pairs(bcombs) do
